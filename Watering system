@@ -1,0 +1,257 @@
+/**
+ *  Water the garden
+ *
+ *  Copyright 2019 Mark Hutchings
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
+ *  in compliance with the License. You may obtain a copy of the License at:
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software distributed under the License is distributed
+ *  on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License
+ *  for the specific language governing permissions and limitations under the License.
+ *
+ */
+definition(
+    name: "Water the garden",
+    namespace: "mhutchy",
+    author: "Mark Hutchings",
+    description: "Switch a device on and notify with various triggers / sensors (timed)",
+    category: "Convenience",
+    iconUrl: "http://cdn.device-icons.smartthings.com/Outdoor/outdoor12-icn.png",
+    iconX2Url: "http://cdn.device-icons.smartthings.com/Outdoor/outdoor12-icn@2x.png",
+    iconX3Url: "http://cdn.device-icons.smartthings.com/Outdoor/outdoor12-icn@2x.png")
+
+
+preferences {
+
+    section	("Digital Inputs"){
+    	input "manualSwitch", "capability.switch", title: "Switch to run sequence manually", multiple: false, required: false
+        input "manualButton", "capability.button", title: "button to run sequence manually", multiple: false, required: false
+        }
+         
+    section ("Action to be taken"){
+    	input "sprinkler", "capability.switch", title: "Sprinkler to be operated?", multiple: false, required: true
+        input "notification", "bool", title: "Send a push notification to smartphone", multiple: false, required: true
+        input "SMSMessage", "bool", title: "Send an SMS notification", multiple: false, required: true
+        input "SMSNumber", "string", title: "phone number for text message", multiple: true, required: false
+        }
+    section ("Automatic watering"){
+    	 
+        input "startTime", "time", title: "if autoschedule required: Start Time", required: false
+        input "duration", "number", title: "How long to water for (auto and manual modes) (s)", required: true
+        }
+        
+	section ("Allow automatic watering if the following conditions are met"){
+        input "maxTemp", "number", title: "Today's temperature was over (C)", required: true
+        input "minTemp", "number", title: "Tomorrow morning's min temperature is over (C)", required: true
+        input "maxRain24", "number", title: "Rain in last 24h is less than (mm)", required: true
+        input "dryDays", "number", title: "How many dry days before watering", required: true
+        input "highTemp", "number", title: "Above this temperature, will water after only 24hrs dry", required: true
+        input "rainRiskAllowed", "number", title: "If risk of rain is less than (%)", required: true
+      
+	}
+        section ("App button"){
+    	input "appButton", "bool", title: "Allow control from app button?", multiple: false, required: false
+        input "appButtonWithCheck", "bool", title: "Check conditions (see below) before running from app", multiple: false, required: false
+        
+         }
+    section ("App preferences"){
+     input(name: "detailedLog", type: "bool", title: "Detailed logging", description: "Detailed logging", displayDuringSetup: true, required: true)
+     }
+}
+
+def installed() {
+	log.debug "$app.label : Installed with settings: ${settings}"
+    
+	unsubscribe()
+	initialize()
+   
+}
+
+def updated() {
+	log.debug "$app.label : Updated with settings: ${settings}"
+
+	unsubscribe()
+	initialize()
+    
+
+}
+
+def initialize() {
+log.debug "$app.label : Initialised ${settings}"
+    
+	if (appButton){
+    	subscribe(app, appHandler)
+        }
+   	subscribe (manualSwitch, "switch.on", manual) 
+    subscribe (manualButton, "button.pushed", manual) 
+    subscribe (sprinkler, "switch", sendNotification)
+    if (startTime) {
+   		schedule(startTime, "scheduled")
+        }
+    else {log.debug "$app.label : No sechedule set for ${sprinkler.displayName}"}
+        
+ }
+
+def manual(evt) {
+    if (detailedLog) {log.debug "${app.label} : ${evt.value} received"}
+    
+        if (state.command == "on") {
+            	if (detailedLog) {log.debug "${sprinkler.displayName} Manual switch off"}
+                switchOff ()
+                }
+ 
+    	else {
+    		if (detailedLog) {log.debug "${sprinkler.displayName} Manual run for ${duration}s"}
+    		switchOn ()
+    		runIn (duration, switchOff)
+    		}  
+           
+       
+        }
+
+def appHandler (evt) {
+	if (detailedLog) {log.debug "${app.label} : appHandler called ${evt.value} received"}
+    if (appButtonWithCheck) {
+    	scheduled (evt)
+        }
+    else {
+    	manual (evt)
+        }
+    }
+
+
+def scheduled (evt) {
+	if (detailedLog) {log.debug "$app.label : scheduled handler called, scheduled ? $scheduled"}
+
+	def sprinklerState = sprinkler.currentValue("switch")
+    
+    def location = getTwcLocation()
+    
+    if (detailedLog) {log.debug "${app.label} - getting weather information for ${location.location.city}, ${location.location.country}"}
+    
+    def weatherNow = getTwcConditions ()
+    def weatherForcast = getTwcForecast ()
+ 	
+    //if (detailedLog) {log.debug "${app.label} - Forcast : ${weatherForcast}" }
+    
+    
+    if (detailedLog) {log.debug "${app.label} - Forcast minimum tomorrow: ${weatherForcast.dayOfWeek[1]} ${weatherForcast.temperatureMin[1]}C"}
+    
+    
+    def temperatureOK = (weatherNow.temperatureMaxSince7Am >= maxTemp)
+    if (detailedLog) {log.debug "${app.label} : Max temperature today of ${weatherNow.temperatureMaxSince7Am}C, ok for watering (>= ${maxTemp}C)? $temperatureOK"}
+    
+    def veryHot = (weatherNow.temperatureMaxSince7Am >= highTemp)
+    
+    def aboveFreezing = (weatherForcast.temperatureMin[1] >= minTemp)
+    if (detailedLog) {log.debug "${app.label} : Minimum temperature tomorrow of ${weatherForcast.temperatureMin[1]}C forcast, Ok for watering (>= ${minTemp}C)? $aboveFreezing"}    
+	
+    def rain24HourOK = (weatherNow.precip24Hour <= maxRain24)
+    if (detailedLog) {log.debug "${app.label} : ${weatherNow.precip24Hour}mm rain has fallen in last 24h, Ok for watering ( <= ${maxRain24}mm)? $rain24HourOK"}
+    
+    def rainingNow = (weatherNow.precip1Hour >= 1.0)
+    if (detailedLog) {log.debug "${app.label} : Is it raining now? ${rainingNow}"}
+    
+    if (!state.noDryDays) {state.noDryDays = 0}
+    
+    def today = weatherForcast.dayOfWeek[0]
+        
+    if (detailedLog) {log.debug "${app.label} : Today is $today, last checked for dry day on $state.checkedDry"}
+    
+    if ((weatherNow.precip24Hour <= 1) && (state.checkedDry != today)) {
+    	state.noDryDays = state.noDryDays + 1
+        }
+        
+    if (!rain24HourOK) {
+    	state.noDryDays = 0
+        }
+        
+    state.checkedDry = today
+    
+    if (detailedLog) {log.debug "${app.label} : There have been $state.noDryDays dry days"}
+    def enoughDryDays = (state.noDryDays >= dryDays)
+    
+    // check to see if it will rain tonight or tomorrow during the day
+    def daypartName = weatherForcast.daypart.daypartName[0]
+    def precipChance = weatherForcast.daypart.precipChance[0]
+    def tonightsRain = precipChance[daypartName.findIndexOf {name -> name == "Tonight"}]
+    def tomorrowsRain = precipChance[daypartName.findIndexOf {name -> name == "Today"}]
+    def maxRain = [tonightsRain,tomorrowsRain].max ()
+    def lowRainRisk = (maxRain < rainRiskAllowed)
+    if (detailedLog) {log.debug "${app.label} : max forcast rain is $maxRain : (< $rainRiskAllowed ? $lowRainRisk)"}
+
+    if (detailedLog) {log.debug "${app.label} : ok for watering? scheduled ($scheduled) && temperatureOK ($temperatureOK) && rain24HourOK ($rain24HourOK) && !(rainingNow) ($rainingNow) && aboveFreezing ($aboveFreezing) && (enoughDryDays ($enoughDryDays) || veryHot ($veryHot)) && (lowRainRisk ($lowRainRisk))"}
+    
+    def okForAuto = (scheduled && temperatureOK && rain24HourOK && !(rainingNow) && aboveFreezing && (enoughDryDays || veryHot) && lowRainRisk)
+    
+    if (detailedLog) {log.debug "${app.label} : All conditions met for auto watering? $okForAuto"}
+    
+    if (okForAuto){
+    	if (sprinklerState == "on") { if (detailedLog) {log.debug "${sprinkler.displayName} already on - no action"}
+        	
+        }
+        
+        
+ 
+    	if (sprinklerState == "off") {
+    		if (detailedLog) {log.debug "${sprinkler.displayName} will run for ${duration}s"}
+    		switchOn ()
+    		runIn (duration, switchOff)
+    		}  
+            
+       
+        }
+    }
+
+def switchOn ()  {
+	if (detailedLog) {log.debug "$app.label : ${sprinkler.displayName} switching on"}
+    sprinkler.on ()
+    state.command = "on"
+    runIn (2, sprinklerStatus)
+
+    }
+
+def switchOff ()  {
+	if (detailedLog) {log.debug "$app.label : ${sprinkler.displayName} switching off"}
+    sprinkler.off ()
+    state.command = "off"
+    runIn (2, sprinklerStatus)
+       
+    }
+
+def sendNotification (evt) {
+	
+    if (detailedLog) {log.debug "$app.label - Notification handler called"}
+	if (notification) {
+    	def message = "$app.label : ${sprinkler.displayName} switched ${sprinkler.currentValue("switch")}"
+   		if (notification) {
+    		log.debug "$app.label Push notification : $message}"
+        	sendPush(message)} 
+    	if (SMSMessage) {
+    		log.debug "$app.label Texting $SMSNumber - $message"
+    		sendSmsMessage("$SMSNumber", message)}
+        }
+        }
+   
+def sprinklerStatus ()  {    
+    if (detailedLog) {log.debug "${sprinkler.displayName} is now ${sprinkler.currentValue("switch")}"}    
+    if (state.command != sprinkler.currentValue("switch")){
+    	log.error "$app.label - ${sprinkler.displayName} did not switch $state.command"
+        if (state.command == "off"){
+        	log.debug "$app.label : ${sprinkler.displayName} sending off command again"
+        	switchOff ()}
+        else {
+        	log.debug "$app.label : ${sprinkler.displayName} sending on command again"
+        	switchOn ()}        
+        }
+    }
+
+def logDebug (text){
+	if (detailedLog) { 
+		def logMessage = "${app.label} : $text"
+        log.debug (logMessage)
+        }
+    }
